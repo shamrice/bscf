@@ -1,0 +1,18 @@
+#!/usr/bin/env perl
+
+use v5.34;
+
+use FindBin qw($Bin);
+use lib "$Bin/../lib";
+
+use BBSSingleConnectionFilter;
+
+sub main {
+    my $custom_config = $ARGV[0] // "";
+    my $filter = BBSSingleConnectionFilter->new(config => $custom_config);
+    $filter->run;
+
+    return 0;
+}
+
+exit(main);
