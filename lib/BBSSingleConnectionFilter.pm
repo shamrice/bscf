@@ -180,8 +180,8 @@ sub _accept_connections {
                     $self->_log->warn("New connection accepted from $client_ip :: Num worker threads: $num_worker_threads :: Num user threads: " . ($cur_num_user_threads + 1) . " :: Max user threads: $max_num_user_threads");
 
                     if (-e $self->_conn_lock_file) {
-                        if (time - $self->_last_connect > 30) {
-                            $self->_log->fatal("Lock file exists but session is expired. Force deleting lock file and allowing new session!");
+                        if (time - $self->_last_connect > $self->_config->get('client_max_session_dur', 2000)) {
+                            $self->_log->fatal("Lock file exists but previous session is expired. Force deleting lock file and allowing new session!");
                             unlink($self->_conn_lock_file) or do {
                                 $self->_log->fatal("Failed to delete lock file! :: $!");
                             };
@@ -237,7 +237,7 @@ sub _accept_connections {
 sub _handle_user_connection {
     my ($self, $client_socket) = @_;
 
-    # Thread 'cancellation' signal handler
+    # Thread 'cancelation' signal handler
     $SIG{'KILL'} = sub { threads->exit(); };
 
     my $client_ip = $client_socket->peerhost;
@@ -283,43 +283,48 @@ sub _handle_user_connection {
 
     my $last_send = time;
     my $timeout_warning_sent = 0;
+    my $timeout_warning = $self->_config->get('client_input_timeout_warning', 60);
+    my $timeout = $self->_config->get('client_input_timeout', 90);
+    my $server_input = '';
+    my $client_input = '';
 
-    while ($client_socket->connected && $server_socket->connected) {
+    try {
+        while ($client_socket->connected && $server_socket->connected) {
 
-        my $server_input = '';
+            $server_input = '';
 
-        $server_socket->recv($server_input, 1);
+            my $bytes_read = $server_socket->sysread($server_input, 1);
 
-        if ($server_input ne '') {
-            $client_socket->send($server_input);
-        } else {
-            # do a peek to see if data is still waiting. This will trigger the
-            # 'connected' to turn false on remotely closed connections (ex: logoff)
-            $server_socket->recv($server_input, 1, MSG_PEEK);
+            if ($server_input ne '') {
+                $client_socket->send($server_input);
+            } elsif (defined $bytes_read && $bytes_read == 0) {
+                $self->_log->fatal("Server disconnected! Closing server socket.");
+                $server_socket->close();
+            }
+
+            $client_input = '';
+            $client_socket->recv($client_input, 1);
+
+            if ($client_input ne '') {
+                $server_socket->send($client_input);
+                $last_send = time;
+                $timeout_warning_sent = 0;
+            }
+
+            my $inactivity = time - $last_send;
+
+            if ($inactivity > $timeout) {
+                $self->_log->error("Client timeout. Disconnecting...");
+                $client_socket->send(pack('C', 155) . ">>Connection closed due to inactivity!" . pack('C', 155));
+                $server_socket->close;
+            } elsif (!$timeout_warning_sent && $inactivity > $timeout_warning) {
+                $self->_log->warn("Sending client inactivity time out warning.");
+                $client_socket->send(pack('C', 155) . ">>WARN: Inactivity time out! ");
+                $timeout_warning_sent = 1;
+            }
         }
-
-        my $temp_input = '';
-        $client_socket->recv($temp_input, 1);
-        #say "CLIENT RECV END";
-        if ($temp_input ne '') {
-            $server_socket->send($temp_input);
-            $last_send = time;
-            $timeout_warning_sent = 0;
-        }
-
-        my $inactivity = time - $last_send;
-
-        if ($inactivity > 120) {
-            $self->_log->error("Client timeout. Disconnecting...");
-            $client_socket->send(pack('C', 155) . ">>Connection closed due to inactivity!" . pack('C', 155));
-            $server_socket->close;
-        } elsif (!$timeout_warning_sent && $inactivity > 60) {
-            $self->_log->warn("Sending client inactivity time out warning.");
-            $client_socket->send(pack('C', 155) . ">>WARN: Inactivity time out! ");
-            $timeout_warning_sent = 1;
-        }
-
-        #say "END OF LOOP :: C=" . $client_socket->connected . " :: S=" . $server_socket->connected;
+    } catch ($session_error) {
+        $self->_log->fatal("Exception thrown during session! :: $session_error");
     }
 
     $self->_log->info("Deleting connection lock file: " . $self->_conn_lock_file);
@@ -329,8 +334,6 @@ sub _handle_user_connection {
 
     $self->_log->info("Leaving client thread and closing connection for client: $client_ip...");
     $client_socket->close;
-
-
 
     return;
 }
