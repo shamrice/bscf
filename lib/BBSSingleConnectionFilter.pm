@@ -264,6 +264,7 @@ sub _handle_user_connection {
     } catch ($connect_error) {
         $self->_log->error("Can't connect to external BBS! :: $connect_error");
         $self->_send_client_offline_screen($client_socket);
+        sleep 1;
         $client_socket->close;
         return;
     }
@@ -287,13 +288,14 @@ sub _handle_user_connection {
     my $timeout = $self->_config->get('client_input_timeout', 90);
     my $server_input = '';
     my $client_input = '';
+    my $bytes_read = 0;
 
     try {
         while ($client_socket->connected && $server_socket->connected) {
 
             $server_input = '';
 
-            my $bytes_read = $server_socket->sysread($server_input, 1);
+            $bytes_read = $server_socket->sysread($server_input, 1);
 
             if ($server_input ne '') {
                 $client_socket->send($server_input);
