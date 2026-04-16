@@ -20,6 +20,7 @@ use Thread::Queue;
 use BSCF::Configuration::Config;
 use BSCF::Log::Logger;
 use BSCF::Log::LogQueue;
+use BSCF::Template::TemplateRenderer qw(BUSY_TEMPLATE OFFLINE_TEMPLATE CONNECT_TEMPLATE);
 
 use constant {
     ATASCII_CURSOR_UP_CODE => 28,
@@ -65,6 +66,7 @@ sub new {
     ) or confess "Failed to set recv timout: $!";
 
     my $log = BSCF::Log::Logger->new(name => $class);
+    my $template_renderer = BSCF::Template::TemplateRenderer->new;
 
     my @blocked_ip_prefixes = split(/,/, $config->get('ip_block_list', ''));
     my @allowed_ip_prefixes = split(/,/, $config->get('ip_allow_list', ''));
@@ -79,6 +81,7 @@ sub new {
         server_socket => $server_socket,
         conn_lock_file => $conn_lock_file,
         last_connect => 0,
+        template_renderer => $template_renderer,
     };
 
     $is_running = 0;
@@ -120,6 +123,11 @@ sub _last_connect {
 
 sub _conn_lock_file {
     return shift->{conn_lock_file};
+}
+
+
+sub _template {
+    return shift->{template_renderer};
 }
 
 sub run {
@@ -187,7 +195,7 @@ sub _accept_connections {
                             };
                         } else {
                             $self->_log->warn("BBS connection lock file exists! BBS is currently busy. Disconnecting user...");
-                            $self->_send_client_busy_screen($client_socket);
+                            $self->_template->render($client_socket, BUSY_TEMPLATE);
                             sleep 1;
                             $client_socket->close;
                             $allow_connect = 0;
@@ -253,6 +261,9 @@ sub _handle_user_connection {
         pack('l!l!', 1, 0)
     ) or confess "Failed to set recv timout: $!";
 
+
+
+
     my $server_socket;
 
     try {
@@ -263,7 +274,7 @@ sub _handle_user_connection {
         die "Connect failed!" unless $server_socket;
     } catch ($connect_error) {
         $self->_log->error("Can't connect to external BBS! :: $connect_error");
-        $self->_send_client_offline_screen($client_socket);
+        $self->_template->render($client_socket, OFFLINE_TEMPLATE);
         sleep 1;
         $client_socket->close;
         return;
@@ -340,57 +351,6 @@ sub _handle_user_connection {
     return;
 }
 
-
-
-sub _send_client_busy_screen {
-    my ($self, $client) = @_;
-
-    my $busy_scr_file = $self->_config->get('busy_screen_file', '../templates/busy.ata');
-
-    if (! -e $busy_scr_file) {
-        my $dest_bbs_name = $self->_config->get('destination_bbs_name', 'BBS');
-        $client->send("Sorry! it looks like the $dest_bbs_name is currently busy right now. Please try again later");
-        return;
-    }
-
-    open(my $FH, "<", $busy_scr_file) or do {
-        $self->_log->fatal("Missing $busy_scr_file ! :: $!");
-        return;
-    };
-
-    my @data = <$FH>;
-    close($FH);
-
-    $client->send($_) foreach (@data);
-
-    return;
-}
-
-
-
-sub _send_client_offline_screen {
-    my ($self, $client) = @_;
-
-    my $offline_scr_file = $self->_config->get('offline_screen_file', '../templates/offline.ata');
-
-    if (! -e $offline_scr_file) {
-        my $dest_bbs_name = $self->_config->get('destination_bbs_name', 'BBS');
-        $client->send("Sorry! $dest_bbs_name is currently offline. Please try again later.");
-        return;
-    }
-
-    open(my $FH, "<", $offline_scr_file) or do {
-        $self->_log->fatal("Missing $offline_scr_file ! :: $!");
-        return;
-    };
-
-    my @data = <$FH>;
-    close($FH);
-
-    $client->send($_) foreach (@data);
-
-    return;
-}
 
 
 
