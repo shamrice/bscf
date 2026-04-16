@@ -320,11 +320,11 @@ sub _handle_user_connection {
             my $inactivity = time - $last_send;
 
             if ($inactivity > $timeout) {
-                $self->_log->error("Client timeout. Disconnecting...");
+                $self->_log->error("Client timeout after inactivity for $inactivity seconds. Disconnecting...");
                 $client_socket->send(pack('C', 155) . ">>Connection closed due to inactivity!" . pack('C', 155));
                 $server_socket->close;
             } elsif (!$timeout_warning_sent && $inactivity > $timeout_warning) {
-                $self->_log->warn("Sending client inactivity time out warning.");
+                $self->_log->warn("Sending client inactivity time out warning. Currently inactive for $inactivity seconds.");
                 $client_socket->send(pack('C', 155) . ">>WARN: Inactivity time out! ");
                 $timeout_warning_sent = 1;
             }
