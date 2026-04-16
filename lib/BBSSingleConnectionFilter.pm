@@ -20,7 +20,7 @@ use Thread::Queue;
 use BSCF::Configuration::Config;
 use BSCF::Log::Logger;
 use BSCF::Log::LogQueue;
-use BSCF::Template::TemplateRenderer qw(BUSY_TEMPLATE OFFLINE_TEMPLATE CONNECT_TEMPLATE);
+use BSCF::Template::TemplateRenderer qw(BUSY_TEMPLATE OFFLINE_TEMPLATE CONNECT_TEMPLATE MAX_CONNECTIONS_TEMPLATE);
 
 use constant {
     ATASCII_CURSOR_UP_CODE => 28,
@@ -208,23 +208,8 @@ sub _accept_connections {
                     }
 
                 } else {
-
                     $self->_log->fatal("Connection blocked due to max connections already open. Num worker threads: $num_worker_threads :: Num user threads: $cur_num_user_threads :: Max user threads: $max_num_user_threads");
-
-                    my $dest_bbs_name = $self->_config->get('destination_bbs_name', 'BBS');
-
-                    $client_socket->send(pack('C', 155) . (pack('C', 13) . pack('C', 10)));
-                    $client_socket->send(" $dest_bbs_name " . pack('C', 155) . (pack('C', 13) . pack('C', 10)));
-                    $client_socket->send(' ________________________________ ' . pack('C', 155) . (pack('C', 13) . pack('C', 10)));
-                    $client_socket->send(' Sorry! Max number of connections ' . pack('C', 155) . (pack('C', 13) . pack('C', 10)));
-                    $client_socket->send(' are currently being used. ' . pack('C', 155) . (pack('C', 13) . pack('C', 10)));
-                    $client_socket->send(pack('C', 155) . (pack('C', 13) . pack('C', 10)));
-                    $client_socket->send(' Please try again later... ');
-                    $client_socket->send(pack('C', 155) . (pack('C', 13) . pack('C', 10)));
-                    $client_socket->send(pack('C', 155) . (pack('C', 13) . pack('C', 10)));
-                    $client_socket->send(' Disconnecting... Bye! ');
-                    $client_socket->send(pack('C', 155) . (pack('C', 13) . pack('C', 10)));
-
+                    $self->_template->render($client_socket, MAX_CONNECTIONS_TEMPLATE);
                     sleep 1;
                     $client_socket->close;
                 }

@@ -14,12 +14,14 @@ use constant {
     BUSY_TEMPLATE => 'busy_screen',
     OFFLINE_TEMPLATE => 'offline_screen',
     CONNECT_TEMPLATE => 'connect_screen',
+    MAX_CONNECTIONS_TEMPLATE => 'max_connections',
 };
 
 our @EXPORT_OK = qw(
     BUSY_TEMPLATE
     OFFLINE_TEMPLATE
     CONNECT_TEMPLATE
+    MAX_CONNECTIONS_TEMPLATE
 );
 
 sub new {
