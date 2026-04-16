@@ -255,7 +255,34 @@ sub _handle_user_connection {
     ) or confess "Failed to set recv timout: $!";
 
 
+    if ($self->_config->get('enable_connect_prompt_filter', 1)) {
+        my $connect_ascii_code = $self->_config->get('connect_ascii_code', 13);
+        my $chars_attempt_count = 0;
+        my $total_chars_attemtped_count = 0; #includes ignored ones
+        my $ascii_code;
+        my @ignore_ascii_codes = (1, 3, 5, 6, 23 .. 26, 28 .. 34, 36, 39, 240 .. 255); #telnet control codes (maybe should be a config?)
 
+        $self->_log->info("Validating connection :: IP: $client_ip:" . $client_socket->peerport . " :: Waiting for valid ENTER/RETURN key press...");
+
+        $self->_template->render($client_socket, CONNECT_TEMPLATE);
+
+        do {
+            my $temp_input;
+            $client_socket->recv($temp_input, 1);
+            $ascii_code = unpack('C', $temp_input);
+            $self->_log->debug("Validating connection :: IP: $client_ip:" . $client_socket->peerport . " :: ASCII=$ascii_code :: Attempt: $chars_attempt_count");
+            $chars_attempt_count++ if (!grep(/$ascii_code/, @ignore_ascii_codes));
+            $total_chars_attemtped_count++;
+
+        } until ($ascii_code == $connect_ascii_code || $chars_attempt_count >= 5 || $total_chars_attemtped_count > 30);
+
+        if ($ascii_code != $connect_ascii_code) {
+            $self->_log->fatal("Invalid ASCII code entered: $ascii_code :: chars attempted: $chars_attempt_count :: total_chars_attempted: $total_chars_attemtped_count :: Cannot determine connection type.. disconnecting user from ip: $client_ip");
+            sleep 1;
+            $client_socket->close;
+            return;
+        }
+    }
 
     my $server_socket;
 
