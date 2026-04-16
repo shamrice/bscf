@@ -32,7 +32,7 @@ use constant {
 
 no warnings qw(experimental::try);
 
-our $VERSION = '0.1';
+our $VERSION = '0.2';
 our $BOOT_DATE = DateTime->now;
 
 my $is_running :shared;
