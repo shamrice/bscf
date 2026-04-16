@@ -136,8 +136,6 @@ sub run {
 
     $is_running = 1;
 
-    my $cleanup_thread = threads->new(sub { $self->_thread_clean_up; });
-
     my $log_queue_thread = threads->new(sub {
         BSCF::Log::LogQueue::log_queue_handler_thread;
     });
@@ -218,6 +216,16 @@ sub _accept_connections {
         } else {
             $self->_log->debug("TIMEOUT :: Client did not connect...");
         }
+
+        try {
+            foreach my $joinable ( threads->list(threads::joinable) ) {
+                $self->_log->info("Cleaning up completed threads between connections :: Joining joinable tid: " . $joinable->tid);
+                $joinable->join;
+            }
+        } catch ($join_ex) {
+            $self->_log->fatal("Error joining closed threads! :: $join_ex");
+        }
+
     } while ($is_running);
 
     return;
@@ -338,8 +346,6 @@ sub _handle_user_connection {
 
 
 
-
-
 =head2 _is_client_ip_blocked
     Checks to see if the given client IP matches any of the configured
     blocked IP prefixes in the configuration. If a match is found,
@@ -368,39 +374,6 @@ sub _is_client_ip_blocked {
         }
     }
     return 0;
-}
-
-
-
-=head2 _thread_clean_up
-    NOTE: RUNS IN OWN THREAD
-    This method wakes up on a configured interval and joins any threads that may
-    be left dangling after a user disconnects.
-    It also handles cleaning up the call log database records.
-=cut
-sub _thread_clean_up {
-    my ($self) = @_;
-
-    my $sleep_duration = $self->_config->get('thread_cleanup_duration', 60);
-
-    while ($is_running) {
-
-        $self->_log->info("Clean up thread is running...");
-        try {
-
-            foreach my $joinable ( threads->list(threads::joinable) ) {
-                $self->_log->info("Joing joinable tid: " . $joinable->tid);
-                $joinable->join;
-            }
-
-            $self->_log->info("Clean up thread complete. Sleeping for: $sleep_duration");
-        } catch ($error) {
-            $self->_log->fatal("Error in thread clean up! :: Sleeping for $sleep_duration :: $error");
-        }
-
-        sleep $sleep_duration;
-    }
-    return;
 }
 
 
