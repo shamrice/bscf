@@ -387,10 +387,10 @@ sub _is_client_ip_blocked {
     return 1 if (!$client_ip);
 
     foreach my $blocked_ip_prefix ($self->_blocked_ip_prefixes->@*) {
-        if ($client_ip =~ m/$blocked_ip_prefix/) {
+        if ($client_ip =~ m/^$blocked_ip_prefix/) {
 
             foreach my $allowed_ip_prefix ($self->_allowed_ip_prefixes->@*) {
-                if ($client_ip =~ m/$allowed_ip_prefix/) {
+                if ($client_ip =~ m/^$allowed_ip_prefix/) {
                     $self->_log->warn("IP address: $client_ip is found in allowed ip list entry: $allowed_ip_prefix :: Block overidden!");
                     return 0;
                 }
