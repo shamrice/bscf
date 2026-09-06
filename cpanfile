@@ -7,6 +7,7 @@ requires 'Carp';
 requires 'Config::Tiny';
 requires 'Date::Parse';
 requires 'DateTime';
+requires 'Device::SerialPort';
 requires 'Exporter';
 requires 'Fcntl';
 requires 'File::Basename';

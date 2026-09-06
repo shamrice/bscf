@@ -20,6 +20,7 @@ use Thread::Queue;
 use BSCF::Configuration::Config;
 use BSCF::Log::Logger;
 use BSCF::Log::LogQueue;
+use BSCF::Modem::ModemConnectionHandler;
 use BSCF::Template::TemplateRenderer qw(BUSY_TEMPLATE OFFLINE_TEMPLATE CONNECT_TEMPLATE MAX_CONNECTIONS_TEMPLATE);
 
 use constant {
@@ -148,6 +149,14 @@ sub run {
             $self->_server_socket->close;
             return;
         };
+    }
+
+    if ($self->_config->get('dialup_enabled', 0)) {
+        $self->_log->info("Dial up enabled. Starting dial up service thread.");
+        my $dialup_thread = threads->new(sub {
+            my $modem_handler = BSCF::Modem::ModemConnectionHandler->new(conn_lock_file => $self->_conn_lock_file);
+            $modem_handler->run;
+        });
     }
 
     $self->_accept_connections;
