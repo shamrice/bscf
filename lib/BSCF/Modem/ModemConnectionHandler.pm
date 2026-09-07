@@ -84,11 +84,15 @@ sub run {
             $modem->parity($parity);
             $modem->stopbits($stop_bits);
             $modem->handshake($handshake);
+            $modem->error_msg(1);
+            $modem->user_msg(1);
+            $modem->read_const_time(5000); # 5 second pause waiting for streamline($count) input
 
             $self->_log->info("Initializing modem for next connection with: $modem_init");
             $modem->write("$modem_init\r");
+            $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
 
-            sleep 5;
+            #sleep 5;
 
             my ($count, $recv) = $modem->read(255);
             if (!$count || $recv !~ m/$modem_ok/) {
@@ -100,24 +104,30 @@ sub run {
             $self->_log->info("Waiting for incoming phone call...");
 
             while (!$is_conn) {
-                my $recv = $modem->input;
+                #my $recv = $modem->input;
+
+                # TODO : need to figure out blocking without having to specify count.. otherwise can read stuff like
+                #        ING instead of RING
+                my $recv = $modem->streamline(5);
                 if ($recv =~ m/$modem_ring/) {
                     $self->_log->info("Answering incoming phone call...");
                     $modem->write(MODEM_ANSWER . "\r");
+                    $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
                     sleep $sleep_dur_on_connect;
 
                     ($count, $recv) = $modem->read(255);
                     if ($count && $recv =~ m/$modem_connect/) {
-                        $self->_log->info("Call connected!");
+                        $self->_log->info("Call connected! |$recv|");
                         $is_conn = 1;
                     } else {
-                        $self->_log->warn("Failed to connect to incoming phone call. Received: |$recv| :: Sleeping $sleep_dur_on_failure seconds...");
+                        $self->_log->warn("Failed to connect to incoming phone call. :: Sleeping $sleep_dur_on_failure seconds :: Received: |$recv|");
                         $modem->write(MODEM_HANGUP . "\r");
+                        $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
                         sleep $sleep_dur_on_failure;
                     }
                 } else {
                     $self->_log->info("Didn't receive ring. RECV=|$recv|");
-                    sleep 10;
+                   # sleep 10;
                 }
             }
 
@@ -139,6 +149,8 @@ sub run {
             my $client_input = '';
             my $bytes_read = 0;
 
+            #$modem->read_const_time(0); # set input back to non-blocking
+
             while ($is_conn && $server_socket->connected) {
 
                 $server_input = '';
@@ -148,16 +160,25 @@ sub run {
                 # wait for some modem register to clear?
 
                 do {
-                    $bytes_read = $server_socket->sysread($server_input, 3072);
+                    $bytes_read = $server_socket->sysread($server_input, 4096);
                     #$bytes_read = $server_socket->recv($server_input, 40);
 
                     if ($bytes_read) {
                         $self->_log->info("BYTES READ: $bytes_read :: |$server_input|");
+
                         my @bytes = split('', $server_input);
+
                         foreach my $byte (@bytes) {
-                            $modem->write($byte);
-                            usleep 100;
+                            my $count_out = $modem->write($byte);
+                            if (!$count_out) {
+                                $self->_log->error("Write failed! byte: $byte");
+                            } elsif ($count_out != length $byte) {
+                                $self->_log->error("Write failed. Partial transmission of |$byte| :: sent: $count_out");
+                            }
+                            $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
                         }
+
+
                     } elsif (defined $bytes_read && $bytes_read == 0) {
                         $self->_log->fatal("Server disconnected! Closing server socket.");
                         $server_socket->close();
@@ -189,13 +210,15 @@ sub run {
 
             }
 
-            sleep $sleep_dur_on_connect;
             $modem->write(MODEM_HANGUP . "\r");
+            $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
+            sleep $sleep_dur_on_connect;
 
         } catch ($conn_error) {
             $self->_log->fatal("Error during modem connection: $conn_error");
             if ($modem && $is_modem_open) {
                 $modem->write(MODEM_HANGUP . "\r");
+                $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
             }
         }
 
