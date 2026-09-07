@@ -88,6 +88,8 @@ sub run {
             $modem->user_msg(1);
             $modem->read_const_time(5000); # 5 second pause waiting for streamline($count) input
 
+            $modem->purge_all;
+
             $self->_log->info("Initializing modem for next connection with: $modem_init");
             $modem->write("$modem_init\r");
             $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
@@ -110,7 +112,7 @@ sub run {
                 #        ING instead of RING
                 my $recv = $modem->streamline(5);
                 if ($recv =~ m/$modem_ring/) {
-                    $self->_log->info("Answering incoming phone call...");
+                    $self->_log->info("Answering incoming phone call :: |$recv|");
                     $modem->write(MODEM_ANSWER . "\r");
                     $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
                     sleep $sleep_dur_on_connect;
@@ -154,14 +156,10 @@ sub run {
             while ($is_conn && $server_socket->connected) {
 
                 $server_input = '';
-
-                # issue with below is that it only sends about 4 full lines of text regardless
-                # on how it's chopped up.. need to figure out wtf is going on there. Maybe need to
-                # wait for some modem register to clear?
+                $client_input = '';
 
                 do {
                     $bytes_read = $server_socket->sysread($server_input, 4096);
-                    #$bytes_read = $server_socket->recv($server_input, 40);
 
                     if ($bytes_read) {
                         $self->_log->info("BYTES READ: $bytes_read :: |$server_input|");
@@ -187,15 +185,11 @@ sub run {
                     }
                 } until (!$bytes_read);
 
-                # TODO : it shouldn't allow user input until above is actually sent.
-                # noticed that this isn't the case.
 
                 $client_input = $modem->input;
 
                 if ($client_input ne '') {
                     $server_socket->send($client_input);
-                    #$last_send = time;
-                    #timeout_warning_sent = 0;
                 }
 
 
@@ -207,7 +201,6 @@ sub run {
                         $is_conn = 0;
                     }
                 }
-
             }
 
             $modem->write(MODEM_HANGUP . "\r");
@@ -223,6 +216,7 @@ sub run {
         }
 
         if ($modem) {
+            $modem->purge_all;
             $modem->close || do {
                 $self->_log->error("Failed to close modem: $!");
             }
