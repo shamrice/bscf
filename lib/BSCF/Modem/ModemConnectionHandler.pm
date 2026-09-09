@@ -14,6 +14,7 @@ use constant {
     MODEM_RING => 'RING',
     MODEM_ANSWER => 'ATA',
     MODEM_CONNECT => 'CONNECT',
+    MODEM_RESET => 'ATZ',
     MODEM_HANGUP => 'ATH',
 
     REMOTE_CONNECT_CHECK_CMD => 'nc -zv _IP_ _PORT_ 2>&1',
@@ -151,6 +152,64 @@ sub _connect_to_remote_bbs {
 
 
 
+sub _get_user_dest_bbs_selection {
+    my ($self, $modem_dev, $online_bbses) = @_;
+
+    die "Missing modem device or list of online bbses to select from. Cannot select BBS to connect to!" if (!$modem_dev || !$online_bbses);
+
+
+    $modem_dev->write("\r\n" . chr(155));
+    $modem_dev->write("Please select a BBS: \r\n" . chr(155));
+    $modem_dev->write("--------------------- \r\n" . chr(155));
+
+    foreach my $idx (sort { $a <=> $b } keys $online_bbses->%*) {
+        $modem_dev->write(" " . ($idx + 1) . ") " . $online_bbses->{$idx}{name} . " \r\n" . chr(155));
+    }
+    $modem_dev->write(" G) ood Bye \r\n" . chr(155));
+    $modem_dev->write("\r\n" . chr(155));
+    $modem_dev->write("Choice? ");
+    $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
+
+    my $dest_socket;
+    my $attempts = 0;
+    my $is_valid = 0;
+    my $atascii_newline = chr(155);
+    while (!$is_valid && $attempts < 5) {
+        my $recv = '';
+
+        $recv = $modem_dev->input while (!$recv);
+        $modem_dev->write($recv);
+
+        $recv =~ s/\r|\n|$atascii_newline//gm;
+
+        $self->_log->info("ATTEMPT: $attempts :: CHOICE ENTRY=$recv");
+        if ($recv =~ m/^\d+$/) {
+            $recv--;
+            if (exists $online_bbses->{$recv}) {
+                $dest_socket = $self->_connect_to_remote_bbs($online_bbses->{$recv}{ip}, $online_bbses->{$recv}{port});
+                $is_valid = 1;
+            }
+        } elsif ($recv =~ m/G/i) {
+            $modem_dev->write("\r\n" . chr(155) . "Good bye!\r\n" . chr(155));
+            $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
+            sleep 1;
+            return;
+        } else {
+            $modem_dev->write("\r\n" . chr(155) . "Invalid selection! " . "\r\n" . chr(155));
+            sleep 1;
+            $modem_dev->write("Choice? ");
+            $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
+            $attempts++;
+        }
+    }
+
+    $modem_dev->write("\r\n" . chr(155));
+
+    return $dest_socket;
+}
+
+
+
 sub run {
     my ($self) = @_;
 
@@ -161,7 +220,7 @@ sub run {
     my $stop_bits = $self->_config->get('modem_stop_bits', 0);
     my $handshake = $self->_config->get('modem_handshake', 'none');
 
-    my $modem_init = $self->_config->get('modem_init', 'ATZ');
+    my $modem_init = $self->_config->get('modem_init', MODEM_RESET);
 
     my $sleep_dur_on_failure = $self->_config->get('sleep_duration_on_failure', 60);
     my $sleep_dur_on_connect = $self->_config->get('sleep_duration_on_connect', 10);
@@ -179,6 +238,7 @@ sub run {
         try {
 
             $modem = Device::SerialPort->new($com_port);
+            confess "Failed to init modem on com port: $com_port :: $!" if (!$modem);
             $modem->baudrate($baud_rate);
             $modem->databits($data_bits);
             $modem->parity($parity);
@@ -213,6 +273,8 @@ sub run {
                 my $recv = $modem->streamline(5);
                 if ($recv =~ m/$modem_ring/) {
                     $self->_log->info("Answering incoming phone call :: |$recv|");
+                    sleep 1;
+                    $self->_log->info("Sending pickup: " . MODEM_ANSWER);
                     $modem->write(MODEM_ANSWER . "\r");
                     $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
                     sleep $sleep_dur_on_connect;
@@ -230,7 +292,6 @@ sub run {
                     }
                 } else {
                    # $self->_log->info("Didn't receive ring. RECV=|$recv|");
-                   # sleep 10;
                 }
             }
 
@@ -248,6 +309,7 @@ sub run {
                 $server_socket = $self->_connect_to_remote_bbs($online_bbses->{0}{ip}, $online_bbses->{0}{port});
             } else {
                 $self->_log->info("CURRENTLY $num_online_bbses ARE ONLINE");
+                $server_socket = $self->_get_user_dest_bbs_selection($modem, $online_bbses);
                 # TODO : Display list to choose from.
             }
 
@@ -292,12 +354,9 @@ sub run {
                 } until (!$bytes_read);
 
 
+                # TODO : need to make this blocking until user has input without a busy loop
                 $client_input = $modem->input;
-
-                if ($client_input ne '') {
-                    $server_socket->send($client_input);
-                }
-
+                $server_socket->send($client_input) if ($client_input);
 
                 # check if connection dropped.. if so, hang up.
                 if ($modem->can_modemlines) {
