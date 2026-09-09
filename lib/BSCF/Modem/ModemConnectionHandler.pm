@@ -16,6 +16,7 @@ use constant {
     MODEM_CONNECT => 'CONNECT',
     MODEM_RESET => 'ATZ',
     MODEM_HANGUP => 'ATH',
+    NEWLINE => "\r\n" . chr(155),
 
     REMOTE_CONNECT_CHECK_CMD => 'nc -zv _IP_ _PORT_ 2>&1',
 };
@@ -158,15 +159,15 @@ sub _get_user_dest_bbs_selection {
     die "Missing modem device or list of online bbses to select from. Cannot select BBS to connect to!" if (!$modem_dev || !$online_bbses);
 
 
-    $modem_dev->write("\r\n" . chr(155));
-    $modem_dev->write("Please select a BBS: \r\n" . chr(155));
-    $modem_dev->write("--------------------- \r\n" . chr(155));
+    $modem_dev->write(NEWLINE);
+    $modem_dev->write("Please select a BBS: " . NEWLINE);
+    $modem_dev->write("--------------------- " . NEWLINE);
 
     foreach my $idx (sort { $a <=> $b } keys $online_bbses->%*) {
-        $modem_dev->write(" " . ($idx + 1) . ") " . $online_bbses->{$idx}{name} . " \r\n" . chr(155));
+        $modem_dev->write(" " . ($idx + 1) . ") " . $online_bbses->{$idx}{name} . " " . NEWLINE);
     }
-    $modem_dev->write(" G) ood Bye \r\n" . chr(155));
-    $modem_dev->write("\r\n" . chr(155));
+    $modem_dev->write(" G) ood Bye " . NEWLINE);
+    $modem_dev->write(NEWLINE);
     $modem_dev->write("Choice? ");
     $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
 
@@ -190,12 +191,12 @@ sub _get_user_dest_bbs_selection {
                 $is_valid = 1;
             }
         } elsif ($recv =~ m/G/i) {
-            $modem_dev->write("\r\n" . chr(155) . "Good bye!\r\n" . chr(155));
+            $modem_dev->write(NEWLINE . "Good bye! " . NEWLINE);
             $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
             sleep 1;
             return;
         } else {
-            $modem_dev->write("\r\n" . chr(155) . "Invalid selection! " . "\r\n" . chr(155));
+            $modem_dev->write(NEWLINE . "Invalid selection! " . NEWLINE);
             sleep 1;
             $modem_dev->write("Choice? ");
             $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
@@ -203,7 +204,7 @@ sub _get_user_dest_bbs_selection {
         }
     }
 
-    $modem_dev->write("\r\n" . chr(155));
+    $modem_dev->write(NEWLINE);
 
     return $dest_socket;
 }
@@ -300,22 +301,20 @@ sub run {
 
             my $server_socket;
             if (!$num_online_bbses) {
-                $modem->write("\r\n" . chr(155) . "Sorry, BBS is currently offline!\r\n" . chr(155) . "Please try again later.\r\n" . chr(155));
+                $modem->write(NEWLINE . "Sorry, BBS is currently offline! " . NEWLINE . "Please try again later. " . NEWLINE);
                 $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
                 sleep 10;
-
                 confess "No online BBSes to connect to!";
             } elsif ($num_online_bbses == 1) {
                 $server_socket = $self->_connect_to_remote_bbs($online_bbses->{0}{ip}, $online_bbses->{0}{port});
             } else {
-                $self->_log->info("CURRENTLY $num_online_bbses ARE ONLINE");
+                $self->_log->info("$num_online_bbses BBSes are online. Presenting list for user to choose destination...");
                 $server_socket = $self->_get_user_dest_bbs_selection($modem, $online_bbses);
-                # TODO : Display list to choose from.
             }
 
             if (!$server_socket) {
                 confess "No destination BBS selected to connect to. Disconnecting user...";
-            }
+            } 
 
             my $server_input = '';
             my $client_input = '';
