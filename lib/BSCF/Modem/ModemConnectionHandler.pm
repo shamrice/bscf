@@ -15,6 +15,8 @@ use constant {
     MODEM_ANSWER => 'ATA',
     MODEM_CONNECT => 'CONNECT',
     MODEM_HANGUP => 'ATH',
+
+    REMOTE_CONNECT_CHECK_CMD => 'nc -zv _IP_ _PORT_ 2>&1',
 };
 
 no warnings qw(experimental::try);
@@ -29,10 +31,15 @@ sub new {
     my $log = BSCF::Log::Logger->new(name => $class);
     my $lock_file = $args{conn_lock_file} || './conn.log';
 
+    my $destination_bbses = $config->get('destination_bbs_map', '');
+    my @dest_bbs_entries = split(',', $destination_bbses);
+
+
     my $self = {
         config => $config,
         log => $log,
         conn_lock_file => $lock_file,
+        dest_bbs_entries => \@dest_bbs_entries,
     };
 
     return bless($self, $class);
@@ -50,6 +57,82 @@ sub _log {
 sub _conn_lock_file {
     return shift->{conn_lock_file};
 }
+
+sub _dest_bbses {
+    my ($self) = @_;
+    return $self->{dest_bbs_entries} // [ ];
+}
+
+
+sub _get_online_bbses {
+    my ($self) = @_;
+
+    my %online_bbses;
+    my $idx = 0;
+
+    foreach my $dest_bbs ($self->_dest_bbses->@*) {
+        my ($name, $connect_info) = split('\|', $dest_bbs);
+
+        $name ||= '';
+        if (!$connect_info) {
+            $self->_log->error("Missing connection info in dest bbs entry: $dest_bbs :: skipping.");
+            next;
+        }
+        my ($ip, $port) = split(':', $connect_info);
+        $port ||= 23;
+
+        my $conn_check_cmd = REMOTE_CONNECT_CHECK_CMD;
+        $conn_check_cmd =~ s/\_IP\_/$ip/;
+        $conn_check_cmd =~ s/\_PORT\_/$port/;
+
+        my @conn_check = qx{ $conn_check_cmd };
+        if (!grep(/succeeded/gmi, @conn_check)) {
+            $self->_log->warn("Destination BBS: $name ($connect_info) is offline. :: " . join('', @conn_check));
+            next;
+        }
+
+        $self->_log->info("Destination BBS: $name ($connect_info) is online.");
+        $online_bbses{$idx} = {
+            name => $name,
+            ip => $ip,
+            port => $port,
+        };
+        $idx++;
+    }
+
+    return \%online_bbses;
+}
+
+
+sub _connect_to_remote_bbs {
+    my ($self, $ip, $port) = @_;
+
+    confess "Cannot connect to remote bbs, no IP was given!" if (!$ip);
+    $port ||= 23;
+
+    my $server_socket = IO::Socket::INET->new(  PeerAddr => $ip,
+                                                PeerPort => $port,
+                                                Proto    => 'tcp',
+                                                Timeout  => 1);
+
+    if (!$server_socket) {
+        $self->_log->warn("Remote BBS at $ip:$port is offline.");
+        return;
+    }
+
+    $server_socket->setsockopt(
+        SOL_SOCKET, SO_RCVTIMEO,
+        pack('l!l!', 1, 0)
+    ) or confess "Failed to set recv timout: $!";
+
+    $server_socket->blocking(0);
+    $self->_log->info("Successfully connected to remote BBS server: $ip:$port");
+
+    return $server_socket;
+}
+
+
+
 
 sub run {
     my ($self) = @_;
@@ -126,32 +209,38 @@ sub run {
                         $modem->write(MODEM_HANGUP . "\r");
                         $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
                         sleep $sleep_dur_on_failure;
+                        $modem->purge_all;
                     }
                 } else {
-                    $self->_log->info("Didn't receive ring. RECV=|$recv|");
+                   # $self->_log->info("Didn't receive ring. RECV=|$recv|");
                    # sleep 10;
                 }
             }
 
-            my $server_socket = IO::Socket::INET->new(PeerAddr => $self->_config->get('destination_bbs_host', 'localhost'),
-                                                PeerPort => $self->_config->get('destination_bbs_port', 9223),
-                                                Proto    => $self->_config->get('destination_bbs_proto', 'tcp'),
-                                                Timeout  => 1);
-                die "Connect failed!" unless $server_socket;
+            my $online_bbses = $self->_get_online_bbses;
+            my $num_online_bbses = scalar (keys $online_bbses->%*);
 
-            $server_socket->setsockopt(
-                SOL_SOCKET, SO_RCVTIMEO,
-                pack('l!l!', 1, 0)
-            ) or confess "Failed to set recv timout: $!";
+            my $server_socket;
+            if (!$num_online_bbses) {
+                $modem->write("\r\n" . chr(155) . "Sorry, BBS is currently offline!\r\n" . chr(155) . "Please try again later.\r\n" . chr(155));
+                $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
+                sleep 10;
 
-            $server_socket->blocking(0);
-            $self->_log->info("Successfully connected to remote BBS server!");
+                confess "No online BBSes to connect to!";
+            } elsif ($num_online_bbses == 1) {
+                $server_socket = $self->_connect_to_remote_bbs($online_bbses->{0}{ip}, $online_bbses->{0}{port});
+            } else {
+                $self->_log->info("CURRENTLY $num_online_bbses ARE ONLINE");
+                # TODO : Display list to choose from.
+            }
+
+            if (!$server_socket) {
+                confess "No destination BBS selected to connect to. Disconnecting user...";
+            }
 
             my $server_input = '';
             my $client_input = '';
             my $bytes_read = 0;
-
-            #$modem->read_const_time(0); # set input back to non-blocking
 
             while ($is_conn && $server_socket->connected) {
 
