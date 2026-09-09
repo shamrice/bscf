@@ -34,12 +34,19 @@ sub new {
     my $destination_bbses = $config->get('destination_bbs_map', '');
     my @dest_bbs_entries = split(',', $destination_bbses);
 
+    my $dialup_mode_connect_bytes_config = $config->get('destination_bbs_force_dialup_mode_connect_bytes', '');
+    my $dialup_connect_bytes = '';
+    foreach my $byte (split(',', $dialup_mode_connect_bytes_config)) {
+        $dialup_connect_bytes .= pack('C', $byte);
+    }
+
 
     my $self = {
         config => $config,
         log => $log,
         conn_lock_file => $lock_file,
         dest_bbs_entries => \@dest_bbs_entries,
+        dest_bbs_force_dialup_connect_bytes => $dialup_connect_bytes
     };
 
     return bless($self, $class);
@@ -61,6 +68,11 @@ sub _conn_lock_file {
 sub _dest_bbses {
     my ($self) = @_;
     return $self->{dest_bbs_entries} // [ ];
+}
+
+
+sub _dest_bbs_force_dialup_connect_bytes {
+    return shift->{dest_bbs_force_dialup_connect_bytes} // '';
 }
 
 
@@ -127,6 +139,11 @@ sub _connect_to_remote_bbs {
 
     $server_socket->blocking(0);
     $self->_log->info("Successfully connected to remote BBS server: $ip:$port");
+
+    if ($self->_dest_bbs_force_dialup_connect_bytes) {
+        $self->_log->info("Sending configured byte string to remote BBS to signal a dial up connection...");
+        $server_socket->send($self->_dest_bbs_force_dialup_connect_bytes);
+    }
 
     return $server_socket;
 }
