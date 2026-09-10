@@ -314,7 +314,7 @@ sub run {
 
             if (!$server_socket) {
                 confess "No destination BBS selected to connect to. Disconnecting user...";
-            } 
+            }
 
             my $server_input = '';
             my $client_input = '';
@@ -366,15 +366,16 @@ sub run {
                     }
                 }
             }
-
-            $modem->write(MODEM_HANGUP . "\r");
+            sleep 10;
+            $modem->write("+++\r\n" . MODEM_HANGUP . "\r\n");
             $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
-            sleep $sleep_dur_on_connect;
+          #  sleep $sleep_dur_on_connect;
 
         } catch ($conn_error) {
             $self->_log->fatal("Error during modem connection: $conn_error");
             if ($modem && $is_modem_open) {
-                $modem->write(MODEM_HANGUP . "\r");
+                sleep 1;
+                $modem->write("+++\r\n" . MODEM_HANGUP . "\r\n");
                 $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
             }
         }
