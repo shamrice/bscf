@@ -16,7 +16,12 @@ use constant {
     MODEM_CONNECT => 'CONNECT',
     MODEM_RESET => 'ATZ',
     MODEM_HANGUP => 'ATH',
-    NEWLINE => "\r\n" . chr(155),
+
+    ASCII_NEWLINE => 10,
+    ASCII_CARRIAGE_RETURN => 13,
+    ASCII_A_KEY => 65,
+    ATASCII_NEWLINE => 155,
+
 
     REMOTE_CONNECT_CHECK_CMD => 'nc -zv _IP_ _PORT_ 2>&1',
 };
@@ -144,12 +149,72 @@ sub _connect_to_remote_bbs {
 
     if ($self->_dest_bbs_force_dialup_connect_bytes) {
         $self->_log->info("Sending configured byte string to remote BBS to signal a dial up connection...");
-        $server_socket->send($self->_dest_bbs_force_dialup_connect_bytes);
+        $server_socket->send($self->_dest_bbs_force_dialup_connect_bytes . chr($self->_user_connection_type));
     }
 
     return $server_socket;
 }
 
+
+
+sub _newline {
+    my ($self) = @_;
+    return $self->_user_connection_type == ATASCII_NEWLINE ? chr(ATASCII_NEWLINE) : (chr(ASCII_CARRIAGE_RETURN) . chr(ASCII_NEWLINE));
+}
+
+
+sub _user_connection_type {
+    my ($self, $new_val) = @_;
+    if ($new_val) {
+        $self->{user_connection_type} = $new_val;
+    }
+    return $self->{user_connection_type} // ASCII_CARRIAGE_RETURN;
+}
+
+
+sub _init_user_connection_type {
+    my ($self, $modem_dev) = @_;
+
+    die "Missing modem device. Cannot determine connection type!" if (!$modem_dev);
+
+    $modem_dev->purge_all;
+
+    if (!$self->_config->get('enable_connect_prompt_filter', 1)) {
+        $self->_user_connection_type(ASCII_CARRIAGE_RETURN);
+        return;
+    }
+
+    my $ascii_code;
+    my $chars_attempt_count = 0;
+    my $total_chars_attemtped_count = 0; #includes ignored ones
+    my @ignore_ascii_codes = (1, 3, 5, 6, 23 .. 26, 28 .. 34, 36, 39, 240 .. 255); #telnet control codes (maybe should be a config?)
+
+    $self->_log->info("Validating connection :: Waiting for valid ENTER/RETURN key press...");
+
+    $modem_dev->write(chr(ASCII_CARRIAGE_RETURN) . chr(ASCII_NEWLINE) . chr(ATASCII_NEWLINE) . "Press ENTER/RETURN for ATASCII or ANSI");
+    $modem_dev->write(chr(ASCII_CARRIAGE_RETURN) . chr(ASCII_NEWLINE) . chr(ATASCII_NEWLINE) . "Press 'A' for 40 column ASCII");
+
+    do {
+        my $temp_input = $modem_dev->input;
+        if ($temp_input) {
+            $ascii_code = unpack('C', $temp_input);
+            $self->_log->info("Validating connection :: ASCII=$ascii_code :: temp_input=$temp_input :: Attempt: $chars_attempt_count");
+            $chars_attempt_count++ if (!grep(/$ascii_code/, @ignore_ascii_codes));
+            $total_chars_attemtped_count++;
+        }
+
+    } until ($ascii_code == ATASCII_NEWLINE || $ascii_code == ASCII_CARRIAGE_RETURN || $ascii_code == ASCII_A_KEY || $ascii_code == (ASCII_A_KEY + 32) || $chars_attempt_count >= 5 || $total_chars_attemtped_count > 30);
+
+    if ($ascii_code == ATASCII_NEWLINE || $ascii_code == ASCII_CARRIAGE_RETURN || $ascii_code == ASCII_A_KEY || $ascii_code == (ASCII_A_KEY + 32)) {
+        $self->_log->info("Valid connect ASCII code entered: $ascii_code");
+        $self->_user_connection_type($ascii_code);
+    } else {
+        confess("Invalid ASCII code entered: $ascii_code :: chars attempted: $chars_attempt_count :: total_chars_attempted: $total_chars_attemtped_count :: Cannot determine connection type.. disconnecting user");
+        return;
+    }
+
+    return;
+}
 
 
 
@@ -159,15 +224,15 @@ sub _get_user_dest_bbs_selection {
     die "Missing modem device or list of online bbses to select from. Cannot select BBS to connect to!" if (!$modem_dev || !$online_bbses);
 
 
-    $modem_dev->write(NEWLINE);
-    $modem_dev->write("Please select a BBS: " . NEWLINE);
-    $modem_dev->write("--------------------- " . NEWLINE);
+    $modem_dev->write($self->_newline);
+    $modem_dev->write("Please select a BBS:" . $self->_newline);
+    $modem_dev->write("---------------------" . $self->_newline);
 
     foreach my $idx (sort { $a <=> $b } keys $online_bbses->%*) {
-        $modem_dev->write(" " . ($idx + 1) . ") " . $online_bbses->{$idx}{name} . " " . NEWLINE);
+        $modem_dev->write(" " . ($idx + 1) . ") " . $online_bbses->{$idx}{name} . $self->_newline);
     }
-    $modem_dev->write(" G) ood Bye " . NEWLINE);
-    $modem_dev->write(NEWLINE);
+    $modem_dev->write(" G) ood Bye" . $self->_newline);
+    $modem_dev->write($self->_newline);
     $modem_dev->write("Choice? ");
     $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
 
@@ -191,12 +256,12 @@ sub _get_user_dest_bbs_selection {
                 $is_valid = 1;
             }
         } elsif ($recv =~ m/G/i) {
-            $modem_dev->write(NEWLINE . "Good bye! " . NEWLINE);
+            $modem_dev->write($self->_newline . "Good bye!" . $self->_newline);
             $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
             sleep 1;
             return;
         } else {
-            $modem_dev->write(NEWLINE . "Invalid selection! " . NEWLINE);
+            $modem_dev->write($self->_newline . "Invalid selection!" . $self->_newline);
             sleep 1;
             $modem_dev->write("Choice? ");
             $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
@@ -204,7 +269,7 @@ sub _get_user_dest_bbs_selection {
         }
     }
 
-    $modem_dev->write(NEWLINE);
+    $modem_dev->write($self->_newline);
 
     return $dest_socket;
 }
@@ -223,8 +288,15 @@ sub run {
 
     my $modem_init = $self->_config->get('modem_init', MODEM_RESET);
 
-    my $sleep_dur_on_failure = $self->_config->get('sleep_duration_on_failure', 60);
-    my $sleep_dur_on_connect = $self->_config->get('sleep_duration_on_connect', 10);
+    my $sleep_dur_on_failure = $self->_config->get('sleep_duration_on_failure', 10);
+    my $sleep_dur_on_connect = $self->_config->get('sleep_duration_on_connect', 30);
+
+    # handshake connection on 300baud is very quick so it doesn't need to wait
+    # the full time it would on faster speeds.
+    if ($baud_rate == 300) {
+        $sleep_dur_on_connect /= 2;
+        $self->_log->warn("Configured for 300 baud, halving connect handshake time to $sleep_dur_on_connect seconds");
+    }
 
     my $modem_ok = MODEM_OK;
     my $modem_ring = MODEM_RING;
@@ -296,12 +368,22 @@ sub run {
                 }
             }
 
+            # check if connection dropped.. if so, hang up.
+            if ($modem->can_modemlines) {
+                my $status = $modem->modemlines;
+                if (!($status & $modem->MS_RLSD_ON)) {
+                    confess("NO CARRIER : Dropping phone call. Status=|$status|");
+                }
+            }
+
+            $self->_init_user_connection_type($modem);
+
             my $online_bbses = $self->_get_online_bbses;
             my $num_online_bbses = scalar (keys $online_bbses->%*);
 
             my $server_socket;
             if (!$num_online_bbses) {
-                $modem->write(NEWLINE . "Sorry, BBS is currently offline! " . NEWLINE . "Please try again later. " . NEWLINE);
+                $modem->write($self->_newline . "Sorry, BBS is currently offline!" . $self->_newline . "Please try again later." . $self->_newline);
                 $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
                 sleep 10;
                 confess "No online BBSes to connect to!";
@@ -315,6 +397,9 @@ sub run {
             if (!$server_socket) {
                 confess "No destination BBS selected to connect to. Disconnecting user...";
             }
+
+
+            $modem->write($self->_newline);
 
             my $server_input = '';
             my $client_input = '';
@@ -355,7 +440,7 @@ sub run {
 
                 # TODO : need to make this blocking until user has input without a busy loop
                 $client_input = $modem->input;
-                $server_socket->send($client_input) if ($client_input);
+                $server_socket->send($client_input) if ($client_input || $client_input == 0);
 
                 # check if connection dropped.. if so, hang up.
                 if ($modem->can_modemlines) {
