@@ -195,7 +195,7 @@ sub _init_user_connection_type {
     $modem_dev->write(chr(ASCII_CARRIAGE_RETURN) . chr(ASCII_NEWLINE) . chr(ATASCII_NEWLINE) . "Press 'A' for 40 column ASCII");
 
     do {
-        my $temp_input = $modem_dev->input;
+        my $temp_input = $modem_dev->read(1) . $modem_dev->input;
         if ($temp_input) {
             $ascii_code = unpack('C', $temp_input);
             $self->_log->info("Validating connection :: ASCII=$ascii_code :: temp_input=$temp_input :: Attempt: $chars_attempt_count");
@@ -243,7 +243,9 @@ sub _get_user_dest_bbs_selection {
     while (!$is_valid && $attempts < 5) {
         my $recv = '';
 
-        $recv = $modem_dev->input while (!$recv);
+        # TODO: Should disconnect on time outs!
+
+        $recv = $modem_dev->read(1) . $modem_dev->input while (!$recv);
         $modem_dev->write($recv);
 
         $recv =~ s/\r|\n|$atascii_newline//gm;
@@ -304,10 +306,12 @@ sub run {
 
     $self->_log->info("Running modem connection handler with config :: com port: $com_port :: baud rate: $baud_rate :: databits: $data_bits :: parity: $parity :: stop bits: $stop_bits :: handshake :: $handshake");
 
+
     while(1) {
         my $is_conn = 0;
         my $is_modem_open = 0;
         my $modem;
+        $Device::SerialPort::Babble = 1;
         try {
 
             $modem = Device::SerialPort->new($com_port);
@@ -325,35 +329,43 @@ sub run {
 
             $self->_log->info("Initializing modem for next connection with: $modem_init");
             $modem->write("$modem_init\r");
+            #$modem->write("ATX4\r");
+            #$modem->write("AT+MS=V34,1,300,9600\r");
+            #$modem->write("ATS37=0\r");
             $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
 
             #sleep 5;
 
-            my ($count, $recv) = $modem->read(255);
-            if (!$count || $recv !~ m/$modem_ok/) {
-                $self->_log->fatal("Failed to get an OK response from modem init! Received: |$recv| :: Sleeping $sleep_dur_on_failure seconds and trying again...");
-                sleep $sleep_dur_on_failure;
-                next;
+            my $recv = $modem->read(1) . $modem->input;
+            if ($recv !~ m/$modem_ok/) {
+                confess "Failed to get an OK response from modem init! Received: |$recv|";
             }
 
             $self->_log->info("Waiting for incoming phone call...");
-
+            my $rc;
+            $modem->read_const_time(600000);
             while (!$is_conn) {
                 #my $recv = $modem->input;
 
                 # TODO : need to figure out blocking without having to specify count.. otherwise can read stuff like
                 #        ING instead of RING
-                my $recv = $modem->streamline(5);
+                #my $recv = $modem->streamline(5);
+                my $recv = $modem->read(1) . $modem->input;
+
                 if ($recv =~ m/$modem_ring/) {
-                    $self->_log->info("Answering incoming phone call :: |$recv|");
-                    sleep 1;
+
+
+                #$rc = $modem->wait_modemlines( TIOCM_RI );
+                #if ($rc) {
+                    $self->_log->info("Answering incoming phone call :: |$rc|");
                     $self->_log->info("Sending pickup: " . MODEM_ANSWER);
                     $modem->write(MODEM_ANSWER . "\r");
                     $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
-                    sleep $sleep_dur_on_connect;
+                    $recv = $modem->read(1) . $modem->input;
+                    say "Echo ATA: $recv";
 
-                    ($count, $recv) = $modem->read(255);
-                    if ($count && $recv =~ m/$modem_connect/) {
+                    $recv = $modem->read(1) . $modem->input;
+                    if ($recv =~ m/$modem_connect/) {
                         $self->_log->info("Call connected! |$recv|");
                         $is_conn = 1;
                     } else {
@@ -363,18 +375,21 @@ sub run {
                         sleep $sleep_dur_on_failure;
                         $modem->purge_all;
                     }
+
                 } else {
-                   # $self->_log->info("Didn't receive ring. RECV=|$recv|");
+                   $self->_log->info("Didn't receive ring. RECV=|$recv|");
                 }
             }
 
             # check if connection dropped.. if so, hang up.
-            if ($modem->can_modemlines) {
-                my $status = $modem->modemlines;
-                if (!($status & $modem->MS_RLSD_ON)) {
-                    confess("NO CARRIER : Dropping phone call. Status=|$status|");
-                }
-            }
+            #if ($modem->can_modemlines) {
+            #    my $status = $modem->modemlines;
+            #    if (!($status & $modem->MS_RLSD_ON)) {
+            #        confess("NO CARRIER : Dropping phone call. Status=|$status|");
+            #    }
+            #}
+
+            $modem->read_const_time(15000);
 
             $self->_init_user_connection_type($modem);
 
@@ -385,7 +400,7 @@ sub run {
             if (!$num_online_bbses) {
                 $modem->write($self->_newline . "Sorry, BBS is currently offline!" . $self->_newline . "Please try again later." . $self->_newline);
                 $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
-                sleep 10;
+                sleep 5;
                 confess "No online BBSes to connect to!";
             } elsif ($num_online_bbses == 1) {
                 $server_socket = $self->_connect_to_remote_bbs($online_bbses->{0}{ip}, $online_bbses->{0}{port});
@@ -404,8 +419,24 @@ sub run {
             my $server_input = '';
             my $client_input = '';
             my $bytes_read = 0;
+            my $max_call_duration = $self->_config->get('max_call_duration', 1800);
+            my $call_start_time = time;
+
+            # TODO : This makes things weird when there's no input expected like a screen change.
+            #        it then has to wait for the timeout...
+            #        Also makes typing a bit slow?
+            $modem->read_const_time(5000);
 
             while ($is_conn && $server_socket->connected) {
+
+                if ($call_start_time + $max_call_duration < time) {
+                    $modem->write($self->_newline . "Max call duration reached!");
+                    $modem->write($self->_newline . "Disconnecting..." . $self->_newline);
+                    $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
+                    $self->_log->fatal("Max call duration of $max_call_duration seconds reached! Disconnecting user...");
+                    $is_conn = 0;
+                    last;
+                }
 
                 $server_input = '';
                 $client_input = '';
@@ -431,7 +462,7 @@ sub run {
 
                     } elsif (defined $bytes_read && $bytes_read == 0) {
                         $self->_log->fatal("Server disconnected! Closing server socket.");
-                        $server_socket->close();
+
                         $is_conn = 0;
                         last;
                     }
@@ -439,7 +470,7 @@ sub run {
 
 
                 # TODO : need to make this blocking until user has input without a busy loop
-                $client_input = $modem->input;
+                $client_input = $modem->read(1) . $modem->input;
                 $server_socket->send($client_input) if ($client_input || $client_input == 0);
 
                 # check if connection dropped.. if so, hang up.
@@ -451,16 +482,23 @@ sub run {
                     }
                 }
             }
-            sleep 10;
-            $modem->write("+++\r\n" . MODEM_HANGUP . "\r\n");
+
             $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
+            sleep 10;
+            $modem->write("\r+++\r" . MODEM_HANGUP . "\r");
+            $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
+
+            if ($server_socket->connected) {
+                $server_socket->close();
+            }
+
           #  sleep $sleep_dur_on_connect;
 
         } catch ($conn_error) {
             $self->_log->fatal("Error during modem connection: $conn_error");
             if ($modem && $is_modem_open) {
                 sleep 1;
-                $modem->write("+++\r\n" . MODEM_HANGUP . "\r\n");
+                $modem->write("\r+++\r" . MODEM_HANGUP . "\r");
                 $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
             }
         }
@@ -471,6 +509,7 @@ sub run {
                 $self->_log->error("Failed to close modem: $!");
             }
         }
+
 
         $self->_log->warn("Modem connection closed. Resetting for next connection...");
         sleep $sleep_dur_on_connect;
