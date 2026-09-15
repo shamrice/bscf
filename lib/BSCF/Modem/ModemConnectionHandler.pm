@@ -385,7 +385,7 @@ sub run {
             $modem->handshake($handshake);
             $modem->error_msg(1);
             $modem->user_msg(1);
-            $modem->read_const_time(5000); # 5 seconds 
+            $modem->read_const_time(5000); # 5 seconds
 
             $modem->purge_all;
 
@@ -403,9 +403,8 @@ sub run {
                 confess "Failed to get an OK response from modem init! Received: |$recv|";
             }
 
-            if (!$self->_wait_for_incoming_call($modem)) {
-                die "Failed to connect to incoming call!";
-            }
+            $is_conn = $self->_wait_for_incoming_call($modem);
+            die "Failed to connect to incoming call!" if (!$is_conn);
 
 
             $self->_init_user_connection_type($modem);
@@ -443,8 +442,11 @@ sub run {
             #        Also makes typing a bit slow?
             $modem->read_const_time(1000);
 
+            say "MADE IT TO BEFORE MAIN SERVER LOOP: IS_CONN=$is_conn :: SERVER CONN=" . $server_socket->connected;
+
             while ($is_conn && $server_socket->connected) {
 
+                say "CHECK CALL EXPIRED";
                 if ($call_start_time + $max_call_duration < time) {
                     $modem->write($self->_newline . "Max call duration reached!");
                     $modem->write($self->_newline . "Disconnecting..." . $self->_newline);
@@ -458,6 +460,7 @@ sub run {
                 $client_input = '';
 
                 do {
+                    say "READ FROM SERVER...";
                     $bytes_read = $server_socket->sysread($server_input, 4096);
 
                     if ($bytes_read) {
@@ -465,8 +468,14 @@ sub run {
 
                         my @bytes = split('', $server_input);
 
+                        # TODO : check non-blocking user input on modem connection. If input == CTRL+C
+                        #        cancel whatever is being printed... or maybe just take whatever input, cancel
+                        #        printing and send that input to the server so user doesn't have to wait for a screen
+                        #        draw at 300baud.
+
                         foreach my $byte (@bytes) {
                             my $count_out = $modem->write($byte);
+
                             if (!$count_out) {
                                 $self->_log->error("Write failed! byte: $byte");
                             } elsif ($count_out != length $byte) {
@@ -484,6 +493,14 @@ sub run {
                     }
                 } until (!$bytes_read);
 
+                say "READ FROM CLIENT...";
+
+                # TODO : using read(1) makes it blocking with timeout but causes issues for
+                #        single char input or when the screen changes.
+                $client_input = $modem->read(1) . $modem->input;
+                $server_socket->send($client_input) if ($client_input || $client_input == 0);
+
+                say "CHECK NO CARRIER";
                 # check if connection dropped.. if so, hang up.
                 my $status = $modem->modemlines;
                 if (!($status & $modem->MS_RLSD_ON)) {
@@ -491,11 +508,6 @@ sub run {
                     $is_conn = 0;
                     last;
                 }
-
-                # TODO : using read(1) makes it blocking with timeout but causes issues for
-                #        single char input or when the screen changes.
-                $client_input = $modem->read(1) . $modem->input;
-                $server_socket->send($client_input) if ($client_input || $client_input == 0);
 
             }
 
