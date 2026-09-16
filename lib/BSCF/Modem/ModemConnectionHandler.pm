@@ -88,9 +88,16 @@ sub _get_online_bbses {
 
     my %online_bbses;
     my $idx = 0;
+    my $user_connect_key = $self->_user_connection_type;
+    my $check_if_online = $self->_config->get('check_destination_bbses_are_online', 0);
+    my $filter_bbses = $self->_config->get('filter_destionation_bbses_to_users_conn_type', 1);
+
+    if (!$check_if_online) {
+        $self->_log->warn("Destination online status check is disabled. All configured BBSes will be returned regardless if they are currently online or not.");
+    }
 
     foreach my $dest_bbs ($self->_dest_bbses->@*) {
-        my ($name, $connect_info) = split('\|', $dest_bbs);
+        my ($name, $connect_info, $connect_ascii_codes_raw) = split('\|', $dest_bbs);
 
         $name ||= '';
         if (!$connect_info) {
@@ -100,14 +107,25 @@ sub _get_online_bbses {
         my ($ip, $port) = split(':', $connect_info);
         $port ||= 23;
 
-        my $conn_check_cmd = REMOTE_CONNECT_CHECK_CMD;
-        $conn_check_cmd =~ s/\_IP\_/$ip/;
-        $conn_check_cmd =~ s/\_PORT\_/$port/;
+        if ($filter_bbses) {
+            my @connect_ascii_codes = split(':', $connect_ascii_codes_raw);
 
-        my @conn_check = qx{ $conn_check_cmd };
-        if (!grep(/succeeded/gmi, @conn_check)) {
-            $self->_log->warn("Destination BBS: $name ($connect_info) is offline. :: " . join('', @conn_check));
-            next;
+            if (!grep(/^\Q$user_connect_key\E$/, @connect_ascii_codes)) {
+                $self->_log->info("Destination BBS entry: $dest_bbs is not configured for users connect ASCII code: $user_connect_key :: Not including in online check/BBS list");
+                next;
+            }
+        }
+
+        if ($check_if_online) {
+            my $conn_check_cmd = REMOTE_CONNECT_CHECK_CMD;
+            $conn_check_cmd =~ s/\_IP\_/$ip/;
+            $conn_check_cmd =~ s/\_PORT\_/$port/;
+
+            my @conn_check = qx{ $conn_check_cmd };
+            if (!grep(/succeeded/gmi, @conn_check)) {
+                $self->_log->warn("Destination BBS: $name ($connect_info) is offline. :: " . join('', @conn_check));
+                next;
+            }
         }
 
         $self->_log->info("Destination BBS: $name ($connect_info) is online.");
@@ -298,6 +316,7 @@ sub _wait_for_incoming_call {
     my $modem_ok = MODEM_OK;
     my $modem_init = $self->_config->get('modem_init', MODEM_RESET);
     my $sleep_dur_on_failure = $self->_config->get('sleep_duration_on_failure', 10);
+    my $ring_wait_timeout_duration = $self->_config->get('ring_wait_timeout_duration', 3600000); # 1hr default
     my $orig_read_const_time = $modem_dev->read_const_time;
 
     while (!$is_conn) {
@@ -320,7 +339,7 @@ sub _wait_for_incoming_call {
             $self->_log->info("Modem init finished successfully and ready to accept next incoming call...");
         }
 
-        $modem_dev->read_const_time(600000); # 10 minute timeout waiting for a ring.
+        $modem_dev->read_const_time($ring_wait_timeout_duration);
 
         $modem_dev->purge_all;
         $recv = $modem_dev->read(1) . $modem_dev->input;
@@ -439,11 +458,9 @@ sub run {
             $modem->read_const_time(250); # seems to be enough to keep CPU from screaming and also
                                           # text input not so delayed
 
-            say "MADE IT TO BEFORE MAIN SERVER LOOP: IS_CONN=$is_conn :: SERVER CONN=" . $server_socket->connected;
 
             while ($is_conn && $server_socket->connected) {
 
-                say "CHECK CALL EXPIRED";
                 if ($call_start_time + $max_call_duration < time) {
                     $modem->write($self->_newline . "Max call duration reached!");
                     $modem->write($self->_newline . "Disconnecting..." . $self->_newline);
@@ -457,7 +474,6 @@ sub run {
                 $client_input = '';
 
                 do {
-                    say "READ FROM SERVER...";
                     $bytes_read = $server_socket->sysread($server_input, 4096);
 
                     if ($bytes_read) {
@@ -490,14 +506,12 @@ sub run {
                     }
                 } until (!$bytes_read);
 
-                say "READ FROM CLIENT...";
 
                 # TODO : using read(1) makes it blocking with timeout but causes issues for
                 #        single char input or when the screen changes.
                 $client_input = $modem->read(1) . $modem->input;
                 $server_socket->send($client_input) if ($client_input || $client_input == 0);
 
-                say "CHECK NO CARRIER";
                 # check if connection dropped.. if so, hang up.
                 my $status = $modem->modemlines;
                 if (!($status & $modem->MS_RLSD_ON)) {
