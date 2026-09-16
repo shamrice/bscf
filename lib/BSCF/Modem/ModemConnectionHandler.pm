@@ -252,9 +252,10 @@ sub _get_user_dest_bbs_selection {
 
     foreach my $idx (sort { $a <=> $b } keys $online_bbses->%*) {
         $modem_dev->write(" " . ($idx + 1) . ") " . $online_bbses->{$idx}{name} . $self->_newline);
+        $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
     }
-    $modem_dev->write(" G) ood Bye" . $self->_newline);
-    $modem_dev->write($self->_newline);
+    $modem_dev->write(" G) ood Bye" . $self->_newline . $self->_newline);
+    $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
     $modem_dev->write("Choice? ");
     $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
 
@@ -443,6 +444,9 @@ sub run {
             }
 
             if (!$server_socket) {
+                $modem->write($self->_newline . "Sorry, BBS is currently offline!" . $self->_newline . "Please try again later." . $self->_newline);
+                $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
+                sleep 5;
                 confess "No destination BBS selected to connect to. Disconnecting user...";
             }
 
