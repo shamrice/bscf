@@ -297,15 +297,35 @@ sub _wait_for_incoming_call {
     my $is_conn = 0;
     my $modem_ring = MODEM_RING;
     my $modem_connect = MODEM_CONNECT;
+    my $modem_ok = MODEM_OK;
+    my $modem_init = $self->_config->get('modem_init', MODEM_RESET);
     my $sleep_dur_on_failure = $self->_config->get('sleep_duration_on_failure', 10);
     my $orig_read_const_time = $modem_dev->read_const_time;
-
-    $modem_dev->read_const_time(600000); # 10 minute timeout waiting for a ring.
 
     while (!$is_conn) {
 
         $modem_dev->purge_all;
+
+        $modem_dev->read_const_time(5000);
+
+        $self->_log->info("Initializing modem for next connection with: $modem_init");
+        $modem_dev->write("$modem_init\r");
+        #$modem->write("ATX4\r");
+        #$modem->write("AT+MS=V34,1,300,9600\r");
+        #$modem->write("ATS37=0\r");
+        $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
+
         my $recv = $modem_dev->read(1) . $modem_dev->input;
+        if ($recv !~ m/$modem_ok/) {
+            confess "Failed to get an OK response from modem init! Received: |$recv|";
+        } else {
+            $self->_log->info("Modem init finished successfully and ready to accept next incoming call...");
+        }
+
+        $modem_dev->read_const_time(600000); # 10 minute timeout waiting for a ring.
+
+        $modem_dev->purge_all;
+        $recv = $modem_dev->read(1) . $modem_dev->input;
 
         if ($recv =~ m/$modem_ring/) {
             $self->_log->info("Answering incoming phone call :: |$recv|");
@@ -350,20 +370,17 @@ sub run {
     my $stop_bits = $self->_config->get('modem_stop_bits', 0);
     my $handshake = $self->_config->get('modem_handshake', 'none');
 
-    my $modem_init = $self->_config->get('modem_init', MODEM_RESET);
-
     my $sleep_dur_on_failure = $self->_config->get('sleep_duration_on_failure', 10);
     my $sleep_dur_on_connect = $self->_config->get('sleep_duration_on_connect', 30);
 
     # handshake connection on 300baud is very quick so it doesn't need to wait
     # the full time it would on faster speeds.
+
+    # TODO : is this used anymore?
     if ($baud_rate == 300) {
         $sleep_dur_on_connect /= 2;
         $self->_log->warn("Configured for 300 baud, halving connect handshake time to $sleep_dur_on_connect seconds");
     }
-
-    my $modem_ok = MODEM_OK;
-
 
     $self->_log->info("Running modem connection handler with config :: com port: $com_port :: baud rate: $baud_rate :: databits: $data_bits :: parity: $parity :: stop bits: $stop_bits :: handshake :: $handshake");
 
@@ -372,10 +389,9 @@ sub run {
         my $is_conn = 0;
         my $modem;
         my $server_socket;
-        $Device::SerialPort::Babble = 1;
+        $Device::SerialPort::Babble = 0;
 
         try {
-
             $modem = Device::SerialPort->new($com_port);
             confess "Failed to init modem on com port: $com_port :: $!" if (!$modem);
             $modem->baudrate($baud_rate);
@@ -387,27 +403,12 @@ sub run {
             $modem->user_msg(1);
             $modem->read_const_time(5000); # 5 seconds
 
-            $modem->purge_all;
-
-            $self->_log->info("Initializing modem for next connection with: $modem_init");
-            $modem->write("$modem_init\r");
-            #$modem->write("ATX4\r");
-            #$modem->write("AT+MS=V34,1,300,9600\r");
-            #$modem->write("ATS37=0\r");
-            $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
-
-            #sleep 5;
-
-            my $recv = $modem->read(1) . $modem->input;
-            if ($recv !~ m/$modem_ok/) {
-                confess "Failed to get an OK response from modem init! Received: |$recv|";
-            }
-
             $is_conn = $self->_wait_for_incoming_call($modem);
             die "Failed to connect to incoming call!" if (!$is_conn);
 
-
             $self->_init_user_connection_type($modem);
+
+            $modem->write($self->_newline);
 
             my $online_bbses = $self->_get_online_bbses;
             my $num_online_bbses = scalar (keys $online_bbses->%*);
@@ -437,10 +438,8 @@ sub run {
             my $max_call_duration = $self->_config->get('max_call_duration', 1800);
             my $call_start_time = time;
 
-            # TODO : This makes things weird when there's no input expected like a screen change.
-            #        it then has to wait for the timeout...
-            #        Also makes typing a bit slow?
-            $modem->read_const_time(1000);
+            $modem->read_const_time(250); # seems to be enough to keep CPU from screaming and also
+                                          # text input not so delayed
 
             say "MADE IT TO BEFORE MAIN SERVER LOOP: IS_CONN=$is_conn :: SERVER CONN=" . $server_socket->connected;
 
