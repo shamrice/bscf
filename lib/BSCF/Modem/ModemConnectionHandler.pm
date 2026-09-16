@@ -292,8 +292,6 @@ sub _get_user_dest_bbs_selection {
 sub _wait_for_incoming_call {
     my ($self, $modem_dev) = @_;
 
-    $self->_log->info("Waiting for incoming phone call...");
-
     my $is_conn = 0;
     my $modem_ring = MODEM_RING;
     my $modem_connect = MODEM_CONNECT;
