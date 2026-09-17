@@ -222,6 +222,8 @@ sub _init_user_connection_type {
             $self->_log->info("Validating connection :: ASCII=$ascii_code :: temp_input=$temp_input :: Attempt: $chars_attempt_count");
             $chars_attempt_count++ if (!grep(/$ascii_code/, @ignore_ascii_codes));
             $total_chars_attemtped_count++;
+
+            confess "NO CARRIER on init!" if ($temp_input =~ m/NO CARRIER/); # fail safe in case carrier drops here
         }
 
     } until ($ascii_code == ATASCII_NEWLINE || $ascii_code == ASCII_CARRIAGE_RETURN || $ascii_code == ASCII_A_KEY || $ascii_code == (ASCII_A_KEY + 32) || $chars_attempt_count >= 5 || $total_chars_attemtped_count > 30);
