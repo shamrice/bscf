@@ -55,13 +55,26 @@ sub new {
     my $stop_bits = $config->get('modem_stop_bits', 0);
     my $handshake = $config->get('modem_handshake', 'none');
     my $modem_config_file = $config->get('modem_temp_config_file', './modem.cfg');
+    my $modem_lock_file = $config->get('modem_lock_file', '');
 
     # Seems to be a bug in Device::SerialPort when not calling debug by ref object. It
     # still expects the first param ($self) though it's ignored. Just putting '1' here
     # as filler to bypass.
     Device::SerialPort::debug(1, 1) if ($config->get('modem_debug_output_to_stdout', 0));
 
-    my $modem = Device::SerialPort->new($com_port);
+    if ($modem_lock_file && -f $modem_lock_file) {
+        $log->error("Modem lock file: $modem_lock_file already exists! :: Modem locked by another process");
+        my $locking_pid_info = qx{ pgrep -aF $modem_lock_file };
+        if (!$locking_pid_info) {
+            $log->warn("Lock file is stale (No running matching PID). Overwritting...");
+            qx{ rm $modem_lock_file };
+        } else {
+            $log->fatal("Cannot overwrite modem lock file. It's currently being held by active PID: $locking_pid_info");
+            confess "Cannot overwrite modem lock file. It's currently being held by active PID: $locking_pid_info";
+        }
+    }
+
+    my $modem = Device::SerialPort->new($com_port, 0, $modem_lock_file);
     confess "Failed to init modem on com port: $com_port :: $!" if (!$modem);
     $modem->baudrate($baud_rate);
     $modem->databits($data_bits);
@@ -84,6 +97,8 @@ sub new {
         dest_bbs_force_dialup_connect_bytes => $dialup_connect_bytes,
         modem_config_file => $modem_config_file,
     };
+
+    $log->info("Constructor completed successfully.");
 
     return bless($self, $class);
 }
@@ -420,7 +435,7 @@ sub run {
     my $sleep_dur_on_failure = $self->_config->get('sleep_duration_on_failure', 10);
     my $sleep_dur_on_connect = $self->_config->get('sleep_duration_on_connect', 30);
 
-    $self->_log->info("Running modem connection handler with config : " . $self->_modem_config_file);
+    $self->_log->info("Running modem connection handler with config file: " . $self->_modem_config_file);
 
     while(1) {
         my $is_conn = 0;

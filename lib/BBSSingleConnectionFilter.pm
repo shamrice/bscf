@@ -154,8 +154,15 @@ sub run {
     if ($self->_config->get('dialup_enabled', 0)) {
         $self->_log->info("Dial up enabled. Starting dial up service thread.");
         my $dialup_thread = threads->new(sub {
-            my $modem_handler = BSCF::Modem::ModemConnectionHandler->new(conn_lock_file => $self->_conn_lock_file);
-            $modem_handler->run;
+            while (1) {
+                try {
+                    my $modem_handler = BSCF::Modem::ModemConnectionHandler->new(conn_lock_file => $self->_conn_lock_file);
+                    $modem_handler->run;
+                } catch ($dialup_ex) {
+                    $self->_log->fatal("Fatal error creating/running dialup thread. Sleeping 5 minutes and trying again... :: ERROR: $dialup_ex");
+                    sleep 300; # sleep 5 minutes
+                }
+            }
         });
     }
 
