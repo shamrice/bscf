@@ -47,13 +47,41 @@ sub new {
         $dialup_connect_bytes .= pack('C', $byte);
     }
 
+    my $com_port = $config->get('modem_com_port', '/dev/ttyACM0');
+    my $baud_rate = $config->get('modem_baud_rate', 300);
+    my $data_bits = $config->get('modem_databits', 8);
+    my $parity = $config->get('modem_parity', 'none');
+    my $stop_bits = $config->get('modem_stop_bits', 0);
+    my $handshake = $config->get('modem_handshake', 'none');
+    my $modem_config_file = $config->get('modem_temp_config_file', './modem.cfg');
+
+    # Seems to be a bug in Device::SerialPort when not calling debug by ref object. It
+    # still expects the first param ($self) though it's ignored. Just putting '1' here
+    # as filler to bypass.
+    Device::SerialPort::debug(1, 1) if ($config->get('modem_debug_output_to_stdout', 0));
+
+    my $modem = Device::SerialPort->new($com_port);
+    confess "Failed to init modem on com port: $com_port :: $!" if (!$modem);
+    $modem->baudrate($baud_rate);
+    $modem->databits($data_bits);
+    $modem->parity($parity);
+    $modem->stopbits($stop_bits);
+    $modem->handshake($handshake);
+    $modem->error_msg(1);
+    $modem->user_msg(1);
+    $modem->read_const_time(5000); # 5 seconds
+
+    $modem->save($modem_config_file);
+    $modem->close;
+    undef $modem;
 
     my $self = {
         config => $config,
         log => $log,
         conn_lock_file => $lock_file,
         dest_bbs_entries => \@dest_bbs_entries,
-        dest_bbs_force_dialup_connect_bytes => $dialup_connect_bytes
+        dest_bbs_force_dialup_connect_bytes => $dialup_connect_bytes,
+        modem_config_file => $modem_config_file,
     };
 
     return bless($self, $class);
@@ -70,6 +98,10 @@ sub _log {
 
 sub _conn_lock_file {
     return shift->{conn_lock_file};
+}
+
+sub _modem_config_file {
+    return shift->{modem_config_file};
 }
 
 sub _dest_bbses {
@@ -339,6 +371,7 @@ sub _wait_for_incoming_call {
         if ($recv !~ m/$modem_ok/) {
             confess "Failed to get an OK response from modem init! Received: |$recv|";
         } else {
+            sleep 1;
             $self->_log->info("Modem init finished successfully and ready to accept next incoming call...");
         }
 
@@ -383,45 +416,19 @@ sub _wait_for_incoming_call {
 sub run {
     my ($self) = @_;
 
-    my $com_port = $self->_config->get('modem_com_port', '/dev/ttyACM0');
-    my $baud_rate = $self->_config->get('modem_baud_rate', 300);
-    my $data_bits = $self->_config->get('modem_databits', 8);
-    my $parity = $self->_config->get('modem_parity', 'none');
-    my $stop_bits = $self->_config->get('modem_stop_bits', 0);
-    my $handshake = $self->_config->get('modem_handshake', 'none');
-
     my $sleep_dur_on_failure = $self->_config->get('sleep_duration_on_failure', 10);
     my $sleep_dur_on_connect = $self->_config->get('sleep_duration_on_connect', 30);
 
-    # handshake connection on 300baud is very quick so it doesn't need to wait
-    # the full time it would on faster speeds.
-
-    # TODO : is this used anymore?
-    if ($baud_rate == 300) {
-        $sleep_dur_on_connect /= 2;
-        $self->_log->warn("Configured for 300 baud, halving connect handshake time to $sleep_dur_on_connect seconds");
-    }
-
-    $self->_log->info("Running modem connection handler with config :: com port: $com_port :: baud rate: $baud_rate :: databits: $data_bits :: parity: $parity :: stop bits: $stop_bits :: handshake :: $handshake");
-
+    $self->_log->info("Running modem connection handler with config : " . $self->_modem_config_file);
 
     while(1) {
         my $is_conn = 0;
         my $modem;
         my $server_socket;
-        $Device::SerialPort::Babble = 0;
 
         try {
-            $modem = Device::SerialPort->new($com_port);
-            confess "Failed to init modem on com port: $com_port :: $!" if (!$modem);
-            $modem->baudrate($baud_rate);
-            $modem->databits($data_bits);
-            $modem->parity($parity);
-            $modem->stopbits($stop_bits);
-            $modem->handshake($handshake);
-            $modem->error_msg(1);
-            $modem->user_msg(1);
-            $modem->read_const_time(5000); # 5 seconds
+            $modem = Device::SerialPort->new($self->_modem_config_file);
+            confess "Failed to init modem :: $!" if (!$modem);
 
             $is_conn = $self->_wait_for_incoming_call($modem);
             die "Failed to connect to incoming call!" if (!$is_conn);
@@ -483,7 +490,7 @@ sub run {
                     $bytes_read = $server_socket->sysread($server_input, 4096);
 
                     if ($bytes_read) {
-                        $self->_log->info("BYTES READ: $bytes_read :: |$server_input|");
+                       # $self->_log->info("BYTES READ: " .  (length $bytes_read));
 
                         my @bytes = split('', $server_input);
 
@@ -494,6 +501,14 @@ sub run {
 
                         foreach my $byte (@bytes) {
                             my $count_out = $modem->write($byte);
+                            #print $byte . "|";
+
+                            #$client_input = $modem->input; # don't actually like this.. makes navigation really odd
+                                                           # when screen printing is stopped midway.. though it does work!
+                            #if ($client_input) {
+                            #    $self->_log->info("Printing results to user interrupted by: |$client_input|");
+                            #    last;
+                            #}
 
                             if (!$count_out) {
                                 $self->_log->error("Write failed! byte: $byte");
@@ -501,6 +516,7 @@ sub run {
                                 $self->_log->error("Write failed. Partial transmission of |$byte| :: sent: $count_out");
                             }
                             $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
+                           # usleep(33333); # speed at which chars are sent @ 300 baud
                         }
 
 
@@ -558,6 +574,8 @@ sub run {
                 $self->_log->error("Failed to close modem: $!");
             }
         }
+
+        undef $modem;
 
         $self->_log->warn("Modem connection closed. Resetting for next connection...");
         sleep $sleep_dur_on_connect;
