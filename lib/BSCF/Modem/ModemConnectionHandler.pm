@@ -16,6 +16,7 @@ use constant {
     MODEM_CONNECT => 'CONNECT',
     MODEM_RESET => 'ATZ',
     MODEM_HANGUP => 'ATH',
+    MODEM_ATTENTION => '+++',
 
     ASCII_NEWLINE => 10,
     ASCII_CARRIAGE_RETURN => 13,
@@ -546,7 +547,7 @@ sub run {
 
             $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
             sleep 10;
-            $modem->write("\r+++\r" . MODEM_HANGUP . "\r");
+            $modem->write("\r". MODEM_ATTENTION . "\r" . MODEM_HANGUP . "\r");
             $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
 
             if ($server_socket->connected) {
@@ -559,7 +560,7 @@ sub run {
             if ($modem) {
                 $modem->purge_all;
                 sleep 1;
-                $modem->write("\r+++\r" . MODEM_HANGUP . "\r");
+                $modem->write("\r" . MODEM_ATTENTION . "\r" . MODEM_HANGUP . "\r");
                 $self->_log->warn("Failed to wait for data to write") if (!$modem->write_drain);
             }
 
