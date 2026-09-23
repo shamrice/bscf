@@ -44,11 +44,36 @@ sub new {
         $render_mode = RENDER_MODE_FILE;
     }
 
+    my %template_cache;
+
+    # Populate template file cache for modes that send the template files.
+    if ($render_mode eq RENDER_MODE_FILE || $render_mode eq RENDER_MODE_ALL) {
+        foreach my $template_type (@valid_templates) {
+            my @temp_template_data;
+            my $file = $config->get($template_type . '_file', '');
+            if (! -e $file) {
+                $log->error("Template file was not found for template: $template_type!");
+                next;
+            }
+
+            open(my $FH, "<", $file) or do {
+                $log->fatal("Missing or error reading: $file ! :: $!");
+                next;
+            };
+
+            @temp_template_data = <$FH>;
+            close($FH);
+
+            $template_cache{$template_type} = \@temp_template_data;
+        }
+    }
+
     my $self = {
         config => $config,
         log => $log,
         render_mode => $render_mode,
         valid_templates => \@valid_templates,
+        template_cache => \%template_cache,
     };
 
     return bless($self, $class);
@@ -68,6 +93,10 @@ sub _render_mode {
 
 sub _valid_templates {
     return shift->{valid_templates};
+}
+
+sub _template_cache {
+    return shift->{template_cache} // { };
 }
 
 
@@ -91,25 +120,10 @@ sub render {
         return;
     }
 
-    my $is_send_msg = $self->_render_mode eq RENDER_MODE_ALL ? 1 : 0;
-    my $file = $self->_config->get($template_type . '_file', '');
-    my @data;
+    my $template_data = $self->_template_cache->{$template_type} // [];
+    my $is_send_msg = ($self->_render_mode eq RENDER_MODE_ALL || !scalar $template_data->@*) ? 1 : 0;
 
-    if (! -e $file) {
-        $self->_log->error("Render mode set to: " . $self->_render_mode . " but template file was not found for template: $template_type! :: Sending message only");
-        $is_send_msg = 1;
-    } else {
-
-        open(my $FH, "<", $file) or do {
-            $self->_log->fatal("Missing or error reading: $file ! :: $!");
-            $is_send_msg = 1;
-        };
-
-        @data = <$FH>;
-        close($FH);
-    }
-
-    $client->send($_) foreach (@data);
+    $client->send($_) foreach ($template_data->@*);
     $client->send($msg) if ($is_send_msg);
 
     return;
