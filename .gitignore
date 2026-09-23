@@ -41,4 +41,4 @@ inc/
 # cpanfile.snapshot
 
 # Temp config files
-./modem.cfg
+modem.cfg
