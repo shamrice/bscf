@@ -184,7 +184,8 @@ sub _accept_connections {
     my $num_worker_threads = threads->list(threads::all); # workers are set up before connections so threads will already be running.
     my $max_num_user_threads = $self->_config->get('max_num_user_connections', 5);
 
-    do {
+    while ($is_running) {
+
         my $client_socket = $self->_server_socket->accept;
         if ($client_socket && $client_socket->connected) {
 
@@ -218,7 +219,13 @@ sub _accept_connections {
 
                     if ($allow_connect) {
                         $self->_last_connect(time);
-                        my $user_handler_thread = threads->new(sub { $self->_handle_user_connection($client_socket); });
+                        my $user_handler_thread = threads->new(sub {
+                            try {
+                                $self->_handle_user_connection($client_socket);
+                            } catch ($conn_error) {
+                                $self->_log->fatal("CONN_ERROR: $conn_error");
+                            }
+                        });
                     }
 
                 } else {
@@ -241,8 +248,7 @@ sub _accept_connections {
         } catch ($join_ex) {
             $self->_log->fatal("Error joining closed threads! :: $join_ex");
         }
-
-    } while ($is_running);
+    }
 
     return;
 }
@@ -321,7 +327,14 @@ sub _handle_user_connection {
         pack('l!l!', 1, 0)
     ) or confess "Failed to set recv timout: $!";
 
-    $client_socket->blocking(0);
+    # set client input timeout small but not small enough to fry the CPU burning cycles.
+    $client_socket->setsockopt(
+        SOL_SOCKET, SO_RCVTIMEO,
+        pack('l!l!', 0, 500)
+    ) or confess "Failed to set recv timout: $!";
+
+
+    $client_socket->blocking(1); # blocking so not to use max cpu on connections
     $server_socket->blocking(0);
     $self->_log->info("Successfully connected to remote BBS server!");
 
@@ -342,7 +355,7 @@ sub _handle_user_connection {
 
             $server_input = '';
 
-            $bytes_read = $server_socket->sysread($server_input, 1);
+            $bytes_read = $server_socket->sysread($server_input, 1024);
 
             if ($server_input ne '') {
                 $client_socket->send($server_input);
@@ -352,12 +365,16 @@ sub _handle_user_connection {
             }
 
             $client_input = '';
-            $client_socket->recv($client_input, 1);
+            my $bytes_sent = $client_socket->sysread($client_input, 1024);
 
             if ($client_input ne '') {
                 $server_socket->send($client_input);
                 $last_send = time;
                 $timeout_warning_sent = 0;
+            } elsif (defined $bytes_sent && $bytes_sent == 0) {
+                $self->_log->fatal("Client disconnected! Closing connection(s)");
+                $server_socket->close();
+                $client_socket->close();
             }
 
             my $inactivity = time - $last_send;
