@@ -190,10 +190,12 @@ sub _get_online_bbses {
 
 
 sub _connect_to_remote_bbs {
-    my ($self, $ip, $port) = @_;
+    my ($self, $dest_bbs_info) = @_;
 
-    confess "Cannot connect to remote bbs, no IP was given!" if (!$ip);
-    $port ||= 23;
+    confess "Cannot connect to remote bbs, no destination BBS info was given!" if (!$dest_bbs_info);
+    my $name = $dest_bbs_info->{name} || 'No Name';
+    my $ip = $dest_bbs_info->{ip} || confess "Cannot connect to destination BBS. No IP was given!";
+    my $port = $dest_bbs_info->{port} || 23;
 
     my $server_socket = IO::Socket::INET->new(  PeerAddr => $ip,
                                                 PeerPort => $port,
@@ -201,7 +203,7 @@ sub _connect_to_remote_bbs {
                                                 Timeout  => 1);
 
     if (!$server_socket) {
-        $self->_log->warn("Remote BBS at $ip:$port is offline.");
+        $self->_log->warn("Remote BBS '$name' at $ip:$port is offline.");
         return;
     }
 
@@ -211,7 +213,7 @@ sub _connect_to_remote_bbs {
     ) or confess "Failed to set recv timout: $!";
 
     $server_socket->blocking(0);
-    $self->_log->info("Successfully connected to remote BBS server: $ip:$port");
+    $self->_log->info("Successfully connected to remote BBS server: $name at $ip:$port");
 
     if ($self->_dest_bbs_force_dialup_connect_bytes) {
         $self->_log->info("Sending configured byte string to remote BBS to signal a dial up connection...");
@@ -304,16 +306,16 @@ sub _get_user_dest_bbs_selection {
         $modem_dev->write(" " . ($idx + 1) . ") " . $online_bbses->{$idx}{name} . $self->_newline);
         $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
     }
-    $modem_dev->write(" G) ood Bye" . $self->_newline . $self->_newline);
+    $modem_dev->write(" G)ood Bye" . $self->_newline . $self->_newline);
     $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
-    $modem_dev->write("Choice? ");
+    $modem_dev->write("Choice [1]? ");
     $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
 
     my $dest_socket;
     my $attempts = 0;
     my $is_valid = 0;
     my $atascii_newline = chr(155);
-    while (!$is_valid && $attempts < 5) {
+    while (!$is_valid) {
         my $recv = '';
 
 
@@ -330,24 +332,35 @@ sub _get_user_dest_bbs_selection {
 
         $recv =~ s/\r|\n|$atascii_newline//gm;
 
+        $recv = 1 if (!$recv); # default to first entry if user doesn't enter anything
+
         $self->_log->info("ATTEMPT: $attempts :: CHOICE ENTRY=$recv");
         if ($recv =~ m/^\d+$/) {
             $recv--;
             if (exists $online_bbses->{$recv}) {
-                $dest_socket = $self->_connect_to_remote_bbs($online_bbses->{$recv}{ip}, $online_bbses->{$recv}{port});
+                $dest_socket = $self->_connect_to_remote_bbs($online_bbses->{$recv});
                 $is_valid = 1;
             }
         } elsif ($recv =~ m/G/i) {
-            $modem_dev->write($self->_newline . "Good bye!" . $self->_newline);
+            $modem_dev->write($self->_newline . "Disconnecting... Good bye!" . $self->_newline);
             $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
             sleep 1;
-            return;
+            die "User quit instead of selecting a BBS. Disconnecting...";
         } else {
             $modem_dev->write($self->_newline . "Invalid selection!" . $self->_newline);
             sleep 1;
-            $modem_dev->write("Choice? ");
-            $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
+
             $attempts++;
+
+            if ($attempts > 5) {
+                $modem_dev->write($self->_newline . "Disconnecting... Good bye!" . $self->_newline);
+                $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
+                sleep 1;
+                die "Failed to get BBS selection after $attempts invalid entries. Disconnecting user...";
+            } else {
+                $modem_dev->write("Choice [1]? ");
+                $self->_log->warn("Failed to wait for data to write") if (!$modem_dev->write_drain);
+            }
         }
     }
 
@@ -370,13 +383,15 @@ sub _wait_for_incoming_call {
     my $ring_wait_timeout_duration = $self->_config->get('ring_wait_timeout_duration', 3600000); # 1hr default
     my $orig_read_const_time = $modem_dev->read_const_time;
 
+    $self->_log->info("Waiting for incoming call...");
+
     while (!$is_conn) {
 
         $modem_dev->purge_all;
 
         $modem_dev->read_const_time(5000);
 
-        $self->_log->info("Initializing modem for next connection with: $modem_init");
+        $self->_log->debug("Initializing modem for next connection with: $modem_init");
         $modem_dev->write("$modem_init\r");
         #$modem->write("ATX4\r");
         #$modem->write("AT+MS=V34,1,300,9600\r");
@@ -388,13 +403,15 @@ sub _wait_for_incoming_call {
             confess "Failed to get an OK response from modem init! Received: |$recv|";
         } else {
             sleep 1;
-            $self->_log->info("Modem init finished successfully and ready to accept next incoming call...");
+            $self->_log->debug("Modem init finished successfully and ready to accept next incoming call...");
         }
 
         $modem_dev->read_const_time($ring_wait_timeout_duration);
 
         $modem_dev->purge_all;
         $recv = $modem_dev->read(1) . $modem_dev->input;
+
+        $recv =~ s/\r|\n//gm if ($recv);
 
         if ($recv =~ m/$modem_ring/) {
             $self->_log->info("Answering incoming phone call :: |$recv|");
@@ -417,7 +434,11 @@ sub _wait_for_incoming_call {
             }
 
         } else {
-            $self->_log->info("Didn't receive ring. RECV=|$recv|");
+            if ($recv) {
+                $self->_log->info("Didn't receive ring :: Received=|$recv| :: Resetting and waiting for ring.");
+            } else {
+                $self->_log->debug("Didn't receive ring. Input timeout :: RECV=|$recv| :: Resetting and waiting for ring.");
+            }
         }
     }
 
@@ -433,7 +454,7 @@ sub run {
     my ($self) = @_;
 
     my $sleep_dur_on_failure = $self->_config->get('sleep_duration_on_failure', 10);
-    my $sleep_dur_on_connect = $self->_config->get('sleep_duration_on_connect', 30);
+    my $sleep_dur_on_connect = $self->_config->get('sleep_duration_between_connect', 30);
 
     $self->_log->info("Running modem connection handler with config file: " . $self->_modem_config_file);
 
@@ -462,7 +483,7 @@ sub run {
                 sleep 5;
                 confess "No online BBSes to connect to!";
             } elsif ($num_online_bbses == 1) {
-                $server_socket = $self->_connect_to_remote_bbs($online_bbses->{0}{ip}, $online_bbses->{0}{port});
+                $server_socket = $self->_connect_to_remote_bbs($online_bbses->{0});
             } else {
                 $self->_log->info("$num_online_bbses BBSes are online. Presenting list for user to choose destination...");
                 $server_socket = $self->_get_user_dest_bbs_selection($modem, $online_bbses);
